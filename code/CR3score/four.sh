@@ -44,4 +44,11 @@ ggplot(df, aes(x = genotype, y = CR3_Score, fill = genotype)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 
+  ggsave(
+  filename = "CR3_ModuleScore_by_APOE_condition.pdf",
+  plot = last_plot(),
+  width = 8, height = 5
+)
+
+
 
