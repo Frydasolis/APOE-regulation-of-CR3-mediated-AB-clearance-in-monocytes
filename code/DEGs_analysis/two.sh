@@ -170,3 +170,89 @@ ggsave("DEG_comparison_APOE_panels.pdf", combined_plot, width = 15, height = 6)
 write.csv(merged_deg3433, "Merged_DEG_ADvsHD_APOE34vs33.csv", row.names = FALSE)
 write.csv(merged_deg4433, "Merged_DEG_ADvsHD_APOE44vs33.csv", row.names = FALSE)
 write.csv(merged_deg4434, "Merged_DEG_ADvsHD_APOE44vs34.csv", row.names = FALSE)
+
+
+merged_deg <- Merged_DEG_ADvsHD_APOE44vs33 %>% mutate(gene = rownames(Merged_DEG_ADvsHD_APOE44vs33))
+
+q1_genes <- merged_deg %>%
+  filter(avg_log2FC_ADvsHD > 0, avg_log2FC_APOE > 0) %>%
+  pull(gene)
+q1_indices <- as.numeric(q1_genes)
+q1_gene_symbols <- rownames(mono_obj)[q1_indices]
+
+# Convertir a Entrez IDs para enrichment
+gene_df <- bitr(q1_gene_symbols,
+                fromType = "SYMBOL",
+                toType = "ENTREZID",
+                OrgDb = org.Hs.eg.db)
+
+entrez_ids <- gene_df$ENTREZID
+ego <- enrichGO(
+  gene          = entrez_ids,
+  OrgDb         = org.Hs.eg.db,
+  ont           = "BP",             
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.2,
+  readable      = TRUE
+)
+barplot(ego, showCategory = 15, title = "GO BP Enrichment")
+
+ggsave("GO_BP_enrichment_4433AD.pdf", width = 10, height = 6)
+
+ekegg <- enrichKEGG(
+  gene         = entrez_ids,
+  organism     = "hsa",
+  pvalueCutoff = 0.05
+)
+
+ekegg <- setReadable(ekegg, OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+barplot(ekegg, showCategory = 15, title = "KEGG Pathway Enrichment")
+pdf("KEGG_barplot4434.pdf", width = 7, height = 6)
+barplot(ekegg, showCategory = 15, title = "KEGG Pathway Enrichment")
+dev.off()
+merged_deg <- Merged_DEG_ADvsHD_APOE34vs33 %>% mutate(gene = rownames(Merged_DEG_ADvsHD_APOE34vs33))
+
+q1_genes <- merged_deg %>%
+  filter(avg_log2FC_ADvsHD > 0, avg_log2FC_APOE > 0) %>%
+  pull(gene)
+
+q1_indices <- as.numeric(q1_genes)
+
+q1_gene_symbols <- rownames(mono_obj)[q1_indices]
+
+gene_df <- bitr(q1_gene_symbols,
+                fromType = "SYMBOL",
+                toType = "ENTREZID",
+                OrgDb = org.Hs.eg.db)
+
+entrez_ids <- gene_df$ENTREZID
+ego <- enrichGO(
+  gene          = entrez_ids,
+  OrgDb         = org.Hs.eg.db,
+  ont           = "BP",             
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.2,
+  readable      = TRUE
+)
+
+barplot(ego, showCategory = 15, title = "GO BP Enrichment")
+ggsave("GO_BP_enrichment_3433AD.pdf", width = 10, height = 6)
+
+ekegg <- enrichKEGG(
+  gene         = entrez_ids,
+  organism     = "hsa",
+  pvalueCutoff = 0.05
+)
+ekegg <- setReadable(ekegg, OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+
+
+barplot(ekegg, showCategory = 15, title = "KEGG Pathway Enrichment")
+
+pdf("KEGG_barplot3433.pdf", width = 8, height = 6)
+barplot(ekegg, showCategory = 15, title = "KEGG Pathway Enrichment")
+dev.off()
+
+
+
