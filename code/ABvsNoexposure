@@ -1,1 +1,217 @@
+mkdir -p /datos/lymphocytes/monocytesny/results/star_bulk
+
+cd /datos/lymphocytes/monocytesny/ad/ab
+
+for i in Fryda-*AB_R1_001.fastq.gz Fryda-*Theta_R1_001.fastq.gz
+do
+  sample=$(basename $i _R1_001.fastq.gz)
+
+  STAR \
+   --genomeDir /datos/lymphocytes/monocytesny/resources/star_index_hg38 \
+   --readFilesIn \
+    ${sample}_R1_001.fastq.gz \
+    ${sample}_R2_001.fastq.gz \
+   --readFilesCommand zcat \
+   --runThreadN 16 \
+   --outSAMtype BAM SortedByCoordinate \
+   --outFileNamePrefix /datos/lymphocytes/monocytesny/results/star_bulk/${sample}_
+done
+#---------------------------------------------------------------------------------------------
+BAM_DIR="/datos/lymphocytes/monocytesny/results/star_bulk"
+GTF="/datos/lymphocytes/monocytesny/resources/gencode.v43.annotation.gtf"
+OUTDIR="results"
+
+mkdir -p ${OUTDIR}
+
+featureCounts \
+  -T 16 \
+  -p \
+  -s 0 \
+  -a ${GTF} \
+  -o ${OUTDIR}/counts_all.txt \
+  ${BAM_DIR}/*.bam
+
+echo "featureCounts finished successfully"
+
+
+############################################################
+## Bulk RNA-seq analysis with QC
+## AB vs No_exposure
+############################################################
+
+suppressPackageStartupMessages({
+  library(DESeq2)
+  library(ggplot2)
+  library(pheatmap)
+  library(RColorBrewer)
+  library(clusterProfiler)
+  library(org.Hs.eg.db)
+  library(enrichplot)
+  library(dplyr)
+})
+
+setwd("/datos/lymphocytes/monocytesny/results/star_bulk")
+
+## ================================
+## 1. Load counts
+## ================================
+counts <- read.table(
+  "results/counts_all.txt",
+  header = TRUE,
+  row.names = 1,
+  check.names = FALSE
+)
+counts <- counts[, 6:ncol(counts)]
+colnames(counts) <- gsub("_Aligned.sortedByCoord.out.bam", "", colnames(counts))
+
+## ================================
+## 2. Load metadata
+## ================================
+meta <- read.csv("metadata.csv", row.names = 1)
+counts <- counts[, rownames(meta)]
+
+## ================================
+## 3. Create DESeq2 object
+## ================================
+dds <- DESeqDataSetFromMatrix(
+  countData = counts,
+  colData = meta,
+  design = ~ individual + condition
+)
+
+dds <- dds[rowSums(counts(dds)) > 10, ] # Filter low-count genes
+
+## ================================
+## 4. QC: Normalization and PCA
+## ================================
+vsd <- vst(dds, blind = FALSE)
+
+# PCA plot
+pdf("results/figures/PCA_samples.pdf", width = 6, height = 5)
+plotPCA(vsd, intgroup = c("condition", "individual")) +
+  ggtitle("PCA: AB vs No_exposure")
+dev.off()
+
+# Sample-to-sample correlation heatmap
+sample_cor <- cor(assay(vsd))
+pdf("results/figures/Correlation_heatmap.pdf", width = 6, height = 6)
+pheatmap(sample_cor,
+         main = "Sample correlation",
+         annotation_col = as.data.frame(colData(dds)[, c("condition", "individual")]))
+dev.off()
+
+## ================================
+## 5. Differential expression
+## ================================
+dds <- DESeq(dds)
+
+res <- results(dds, contrast = c("condition", "No_exposure", "AB"))
+res <- lfcShrink(dds, coef="condition_No_exposure_vs_AB", res=res)
+
+res_df <- as.data.frame(res) |> arrange(padj)
+res_sig <- res_df |> filter(padj < 0.05 & abs(log2FoldChange) > 1)
+
+write.csv(res_df, "results/DEGs_all.csv")
+write.csv(res_sig, "results/DEGs_significant.csv")
+
+## ================================
+## 6. Heatmap of top DEGs
+## ================================
+top_genes <- rownames(res_sig)[1:min(50, nrow(res_sig))]
+mat <- assay(vsd)[top_genes, ]
+mat <- t(scale(t(mat)))
+
+annotation_col <- as.data.frame(colData(dds)[, c("condition","individual")])
+
+annotation_colors <- list(
+  condition = c(AB = "#1f77b4", No_exposure = "#ff7f0e"),
+  individual = setNames(
+    RColorBrewer::brewer.pal(length(unique(meta$individual)), "Set3"),
+    unique(meta$individual)
+  )
+)
+
+pdf("results/figures/Heatmap_top_DEGs.pdf", width = 8, height = 10)
+pheatmap(
+  mat,
+  annotation_col = annotation_col,
+  annotation_colors = annotation_colors,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  show_rownames = TRUE,
+  main = "Top DEGs: AB vs No exposure"
+)
+dev.off()
+
+## ================================
+## 7. Volcano plot
+## ================================
+res_df$gene <- rownames(res_df)
+res_df$threshold <- as.factor(ifelse(res_df$padj < 0.05 & abs(res_df$log2FoldChange) > 1,
+                                     ifelse(res_df$log2FoldChange > 1, "Up", "Down"),
+                                     "NS"))
+
+pdf("results/figures/Volcano_plot.pdf", width = 6, height = 6)
+ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj), color = threshold)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  scale_color_manual(values = c("Up" = "#d73027", "Down" = "#4575b4", "NS" = "grey")) +
+  theme_classic() +
+  xlab("log2 Fold Change") +
+  ylab("-log10 adjusted p-value") +
+  ggtitle("Volcano Plot: AB vs No_exposure") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black")
+dev.off()
+
+## ================================
+## 8. GO enrichment (network)
+## ================================
+genes_up <- rownames(res_sig[res_sig$log2FoldChange > 1, ])
+
+entrez <- bitr(
+  genes_up,
+  fromType = "SYMBOL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+
+ego <- enrichGO(
+  gene = entrez$ENTREZID,
+  OrgDb = org.Hs.eg.db,
+  ont = "BP",
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.05,
+  readable = TRUE
+)
+
+write.csv(as.data.frame(ego), "results/GO_enrichment.csv")
+
+ego <- pairwise_termsim(ego)
+
+pdf("results/figures/GO_enrichment_network.pdf", width = 10, height = 8)
+emapplot(ego, showCategory = 20, layout = "kk")
+dev.off()
+## ================================
+## 9. KEGG enrichment
+## ================================
+# Necesita ENTREZ IDs
+ekegg <- enrichKEGG(
+  gene = entrez$ENTREZID,
+  organism = "hsa",
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.05
+)
+
+ekegg <- setReadable(ekegg, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+write.csv(as.data.frame(ekegg), "results/KEGG_enrichment.csv")
+
+pdf("results/figures/KEGG_enrichment_network.pdf", width = 10, height = 8)
+emapplot(ekegg, showCategory = 20, layout = "kk")
+dev.off()
+
+############################################################
+## END
+############################################################
+
 
